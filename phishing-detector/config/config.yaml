@@ -1,0 +1,53 @@
+# Phishing Detection System - Configuration
+
+# Model Configuration
+model:
+  email_model_path: null  # Path to fine-tuned email model (null = use pretrained)
+  url_model_path: null    # Path to trained URL model
+  max_length: 512         # Maximum token length for email text
+  batch_size: 16          # Batch size for training
+
+# API Configuration
+api:
+  host: "0.0.0.0"
+  port: 8000
+  reload: true
+  workers: 1
+
+# Web Interface Configuration
+web:
+  port: 8501
+  api_url: "http://localhost:8000"
+
+# Paths
+paths:
+  data_dir: "./data"
+  model_dir: "./models"
+  logs_dir: "./logs"
+  raw_data: "./data/raw"
+  processed_data: "./data/processed"
+
+# Detection Configuration
+detection:
+  email_weight: 0.6       # Weight for email score in combined scoring
+  url_weight: 0.4         # Weight for URL score in combined scoring
+  risk_thresholds:
+    high: 0.8             # Threshold for high risk
+    medium: 0.5           # Threshold for medium risk
+    low: 0.3              # Threshold for low risk
+
+# Training Configuration
+training:
+  learning_rate: 0.00002  # 2e-5
+  num_epochs: 3
+  warmup_steps: 500
+  weight_decay: 0.01
+  save_steps: 1000
+  eval_steps: 500
+  logging_steps: 100
+
+# Logging Configuration
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  log_file: "./logs/phishing_detector.log"
