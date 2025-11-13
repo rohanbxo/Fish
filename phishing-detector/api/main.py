@@ -54,8 +54,15 @@ async def startup_event():
         logger.info("Initializing phishing detector...")
         
         # Get model paths from environment or use defaults
-        email_model_path = os.getenv("EMAIL_MODEL_PATH")
+        email_model_path = os.getenv("EMAIL_MODEL_PATH", "models/email_classifier/best_model")
         url_model_path = os.getenv("URL_MODEL_PATH")
+        
+        # Check if model exists
+        if os.path.exists(email_model_path):
+            logger.info(f"✅ Found trained model at: {email_model_path}")
+        else:
+            logger.warning(f"⚠️  Model not found at {email_model_path}, using base model")
+            email_model_path = None
         
         # Initialize detector
         detector = PhishingDetector(
@@ -66,10 +73,10 @@ async def startup_event():
         # Set detector in router
         detection.set_detector(detector)
         
-        logger.info("Phishing detector initialized successfully")
+        logger.info("✅ Phishing detector initialized successfully")
     
     except Exception as e:
-        logger.error(f"Failed to initialize detector: {e}")
+        logger.error(f"❌ Failed to initialize detector: {e}")
         raise
 
 
