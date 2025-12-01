@@ -11,8 +11,10 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 import streamlit as st
-import requests
 import json
+import logging
+
+from src.models.detector import PhishingDetector
 
 # Page config
 st.set_page_config(
@@ -60,23 +62,47 @@ Analyze emails for phishing indicators using advanced AI and NLP techniques.
 This tool combines email text analysis with URL risk assessment to provide comprehensive phishing detection.
 """)
 
-# API endpoint
-API_URL = os.getenv("API_URL", "http://localhost:8000")
+# Initialize detector with caching to avoid reloading on every interaction
+@st.cache_resource
+def load_detector():
+    """Load and cache the phishing detector"""
+    try:
+        email_model_path = os.getenv("EMAIL_MODEL_PATH", "models/email_classifier/best_model")
+        url_model_path = os.getenv("URL_MODEL_PATH")
+
+        # Check if model exists
+        if os.path.exists(email_model_path):
+            logging.info(f"Loading model from: {email_model_path}")
+        else:
+            logging.warning(f"Model not found at {email_model_path}, using base model")
+            email_model_path = None
+
+        detector = PhishingDetector(
+            email_model_path=email_model_path,
+            url_model_path=url_model_path
+        )
+        return detector, True, None
+    except Exception as e:
+        logging.error(f"Failed to initialize detector: {e}")
+        return None, False, str(e)
+
+# Load detector
+detector, detector_loaded, error_message = load_detector()
 
 # Sidebar
 with st.sidebar:
     st.header("About")
     st.info("""
-    This tool uses advanced Natural Language Processing (NLP) and machine learning 
+    This tool uses advanced Natural Language Processing (NLP) and machine learning
     to detect phishing attempts in emails. It analyzes:
-    
+
     - Email content and language patterns
     - Sender information
     - Embedded URLs and links
     - Urgency indicators
     - Sensitive information requests
     """)
-    
+
     st.header("Example Phishing Indicators")
     st.markdown("""
     - Urgent language and threats
@@ -87,16 +113,12 @@ with st.sidebar:
     - Generic greetings ("Dear Customer")
     - Unexpected attachments
     """)
-    
-    st.header("API Status")
-    try:
-        response = requests.get(f"{API_URL}/api/v1/health", timeout=2)
-        if response.status_code == 200:
-            st.success("✅ API Connected")
-        else:
-            st.error("❌ API Error")
-    except:
-        st.error("❌ API Offline")
+
+    st.header("Model Status")
+    if detector_loaded:
+        st.success("✅ Model Loaded")
+    else:
+        st.error(f"❌ Model Error: {error_message}")
 
 # Main content
 tab1, tab2, tab3 = st.tabs(["📧 Analyze Email", "📊 Examples", "ℹ️ Help"])
@@ -157,105 +179,94 @@ with tab1:
             st.error("⚠️ Please enter email body")
         elif not sender:
             st.error("⚠️ Please enter sender email")
+        elif not detector_loaded:
+            st.error("⚠️ Model not loaded. Please check the error in the sidebar.")
         else:
             with st.spinner("Analyzing email..."):
                 try:
                     # Parse URLs
                     url_list = [u.strip() for u in urls.split('\n') if u.strip()]
-                    
-                    # Call API
-                    response = requests.post(
-                        f"{API_URL}/api/v1/detect",
-                        json={
-                            "subject": subject,
-                            "body": body,
-                            "sender": sender,
-                            "urls": url_list
-                        },
-                        timeout=30
+
+                    # Use detector directly
+                    result = detector.detect(
+                        subject=subject,
+                        body=body,
+                        sender=sender,
+                        urls=url_list if url_list else None
                     )
-                    
-                    if response.status_code == 200:
-                        result = response.json()
-                        
-                        st.success("✅ Analysis Complete")
-                        st.markdown("---")
-                        
-                        # Display risk level with color
-                        risk_level = result['risk_level']
-                        risk_score = result['risk_score']
-                        
-                        if "HIGH" in risk_level:
-                            st.markdown(f'<div class="risk-high">🚨 {risk_level}</div>', unsafe_allow_html=True)
-                        elif "MEDIUM" in risk_level:
-                            st.markdown(f'<div class="risk-medium">⚠️ {risk_level}</div>', unsafe_allow_html=True)
-                        elif "LOW" in risk_level:
-                            st.markdown(f'<div class="risk-low">⚡ {risk_level}</div>', unsafe_allow_html=True)
-                        else:
-                            st.markdown(f'<div class="risk-safe">✅ {risk_level}</div>', unsafe_allow_html=True)
-                        
-                        st.markdown("")
-                        
-                        # Metrics
-                        col1, col2, col3 = st.columns(3)
-                        
-                        with col1:
-                            st.metric("Overall Risk Score", f"{risk_score:.2%}")
-                        
-                        with col2:
-                            st.metric("Email Score", f"{result['email_score']:.2%}")
-                        
-                        with col3:
-                            if result['url_scores']:
-                                max_url_score = max(result['url_scores'])
-                                st.metric("Max URL Score", f"{max_url_score:.2%}")
-                            else:
-                                st.metric("URLs Detected", "0")
-                        
-                        # Progress bar for risk
-                        st.progress(risk_score)
-                        
-                        st.markdown("---")
-                        
-                        # Indicators
-                        if result.get('indicators'):
-                            st.subheader("🔍 Detected Indicators")
-                            for indicator in result['indicators']:
-                                st.warning(f"• {indicator}")
-                        
-                        # Detailed analysis
-                        st.subheader("📊 Detailed Analysis")
-                        
-                        col1, col2 = st.columns(2)
-                        
-                        with col1:
-                            st.write("**Email Analysis:**")
-                            email_analysis = result['explanation']['email_analysis']
-                            st.json(email_analysis)
-                        
-                        with col2:
-                            st.write("**URL Analysis:**")
-                            url_analysis = result['explanation']['url_analysis']
-                            st.json(url_analysis)
-                        
-                        # Recommendations
-                        st.subheader("💡 Recommendations")
-                        for rec in result['explanation']['recommendations']:
-                            st.info(f"• {rec}")
-                        
-                        # Raw response
-                        with st.expander("📋 View Full Response"):
-                            st.json(result)
-                    
+
+                    st.success("✅ Analysis Complete")
+                    st.markdown("---")
+
+                    # Display risk level with color
+                    risk_level = result['risk_level']
+                    risk_score = result['risk_score']
+
+                    if "HIGH" in risk_level:
+                        st.markdown(f'<div class="risk-high">🚨 {risk_level}</div>', unsafe_allow_html=True)
+                    elif "MEDIUM" in risk_level:
+                        st.markdown(f'<div class="risk-medium">⚠️ {risk_level}</div>', unsafe_allow_html=True)
+                    elif "LOW" in risk_level:
+                        st.markdown(f'<div class="risk-low">⚡ {risk_level}</div>', unsafe_allow_html=True)
                     else:
-                        st.error(f"❌ Error: {response.status_code} - {response.text}")
-                
-                except requests.exceptions.Timeout:
-                    st.error("❌ Request timeout. Please try again.")
-                except requests.exceptions.ConnectionError:
-                    st.error("❌ Could not connect to API. Make sure the API server is running.")
+                        st.markdown(f'<div class="risk-safe">✅ {risk_level}</div>', unsafe_allow_html=True)
+
+                    st.markdown("")
+
+                    # Metrics
+                    col1, col2, col3 = st.columns(3)
+
+                    with col1:
+                        st.metric("Overall Risk Score", f"{risk_score:.2%}")
+
+                    with col2:
+                        st.metric("Email Score", f"{result['email_score']:.2%}")
+
+                    with col3:
+                        if result['url_scores']:
+                            max_url_score = max(result['url_scores'])
+                            st.metric("Max URL Score", f"{max_url_score:.2%}")
+                        else:
+                            st.metric("URLs Detected", "0")
+
+                    # Progress bar for risk
+                    st.progress(risk_score)
+
+                    st.markdown("---")
+
+                    # Indicators
+                    if result.get('indicators'):
+                        st.subheader("🔍 Detected Indicators")
+                        for indicator in result['indicators']:
+                            st.warning(f"• {indicator}")
+
+                    # Detailed analysis
+                    st.subheader("📊 Detailed Analysis")
+
+                    col1, col2 = st.columns(2)
+
+                    with col1:
+                        st.write("**Email Analysis:**")
+                        email_analysis = result['explanation']['email_analysis']
+                        st.json(email_analysis)
+
+                    with col2:
+                        st.write("**URL Analysis:**")
+                        url_analysis = result['explanation']['url_analysis']
+                        st.json(url_analysis)
+
+                    # Recommendations
+                    st.subheader("💡 Recommendations")
+                    for rec in result['explanation']['recommendations']:
+                        st.info(f"• {rec}")
+
+                    # Raw response
+                    with st.expander("📋 View Full Response"):
+                        st.json(result)
+
                 except Exception as e:
-                    st.error(f"❌ Error: {str(e)}")
+                    st.error(f"❌ Error during analysis: {str(e)}")
+                    logging.error(f"Detection error: {e}", exc_info=True)
 
 with tab2:
     st.header("Example Emails")
@@ -334,14 +345,14 @@ with tab3:
     - **LOW (0.3 - 0.5)**: Potentially suspicious - Exercise caution
     - **SAFE (0.0 - 0.3)**: Likely legitimate - Still verify important requests
     """)
-    
-    st.subheader("API Documentation")
-    st.markdown(f"""
-    For programmatic access, use the API:
-    
-    **Endpoint**: `POST {API_URL}/api/v1/detect`
-    
-    **Documentation**: [{API_URL}/docs]({API_URL}/docs)
+
+    st.subheader("Technical Details")
+    st.markdown("""
+    This application uses:
+    - **DistilBERT** transformer model for email text classification
+    - **Random Forest** classifier for URL risk assessment
+    - **Feature extraction** for urgency indicators and sensitive information requests
+    - All processing is done locally without external API calls
     """)
 
 # Footer
