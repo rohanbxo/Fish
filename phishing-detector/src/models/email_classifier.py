@@ -6,11 +6,7 @@ import os
 from typing import List, Tuple
 import numpy as np
 import torch
-from transformers import (
-    DistilBertTokenizer,
-    DistilBertForSequenceClassification,
-    pipeline
-)
+from transformers import pipeline
 
 
 class EmailClassifier:
@@ -18,35 +14,29 @@ class EmailClassifier:
     
     def __init__(self, model_path: str = None, use_pretrained: bool = True):
         """
-        Initialize email classifier
-        
+        Initialize email classifier using zero-shot classification
+
         Args:
-            model_path: Path to saved model (optional)
+            model_path: Path to saved model (optional, ignored for now)
             use_pretrained: Whether to use pretrained model
         """
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = 0 if torch.cuda.is_available() else -1
         self.max_length = 512
-        
-        if model_path and os.path.exists(model_path):
-            # Load fine-tuned model
-            self.tokenizer = DistilBertTokenizer.from_pretrained(model_path)
-            self.model = DistilBertForSequenceClassification.from_pretrained(model_path)
-            self.model.to(self.device)
-            self.model.eval()
-            print(f"Loaded model from {model_path}")
-        elif use_pretrained:
-            # Use base pretrained model
-            model_name = "distilbert-base-uncased"
-            self.tokenizer = DistilBertTokenizer.from_pretrained(model_name)
-            self.model = DistilBertForSequenceClassification.from_pretrained(
-                model_name,
-                num_labels=2
+
+        # Use zero-shot classification for phishing detection
+        # This works without training by understanding the concepts
+        try:
+            self.classifier = pipeline(
+                "zero-shot-classification",
+                model="facebook/bart-large-mnli",
+                device=self.device
             )
-            self.model.to(self.device)
-            self.model.eval()
-            print(f"Loaded base model: {model_name}")
-        else:
-            raise ValueError("Either provide model_path or set use_pretrained=True")
+            self.use_zero_shot = True
+            print(f"Loaded zero-shot classifier: facebook/bart-large-mnli")
+        except Exception as e:
+            print(f"Failed to load zero-shot model, using rule-based fallback: {e}")
+            self.classifier = None
+            self.use_zero_shot = False
     
     def predict(self, text: str) -> int:
         """
@@ -63,36 +53,53 @@ class EmailClassifier:
     
     def predict_proba(self, text: str) -> np.ndarray:
         """
-        Get prediction probabilities
-        
+        Get prediction probabilities using zero-shot classification
+
         Args:
             text: Email text
-            
+
         Returns:
             Array of probabilities [legitimate_prob, phishing_prob]
         """
         if not text:
             return np.array([0.5, 0.5])
-        
-        # Tokenize
-        inputs = self.tokenizer(
-            text,
-            padding='max_length',
-            truncation=True,
-            max_length=self.max_length,
-            return_tensors='pt'
-        )
-        
-        # Move to device
-        inputs = {k: v.to(self.device) for k, v in inputs.items()}
-        
-        # Predict
-        with torch.no_grad():
-            outputs = self.model(**inputs)
-            logits = outputs.logits
-            probs = torch.softmax(logits, dim=-1)
-        
-        return probs[0].cpu().numpy()
+
+        if self.use_zero_shot and self.classifier:
+            try:
+                # Truncate text if too long
+                if len(text) > 1000:
+                    text = text[:1000]
+
+                # Define labels for zero-shot classification
+                candidate_labels = [
+                    "legitimate business email",
+                    "phishing scam or fraudulent message"
+                ]
+
+                # Perform zero-shot classification
+                result = self.classifier(
+                    text,
+                    candidate_labels,
+                    multi_label=False
+                )
+
+                # Extract probabilities
+                # result['labels'] gives ordered labels by score
+                # result['scores'] gives corresponding scores
+                phishing_idx = result['labels'].index("phishing scam or fraudulent message")
+                legitimate_idx = result['labels'].index("legitimate business email")
+
+                phishing_score = result['scores'][phishing_idx]
+                legitimate_score = result['scores'][legitimate_idx]
+
+                return np.array([legitimate_score, phishing_score])
+
+            except Exception as e:
+                print(f"Zero-shot classification error: {e}")
+                # Fall through to rule-based approach
+
+        # Fallback: rule-based detection
+        return self._rule_based_detection(text)
     
     def predict_batch(self, texts: List[str]) -> List[int]:
         """
@@ -109,10 +116,45 @@ class EmailClassifier:
     def predict_proba_batch(self, texts: List[str]) -> List[np.ndarray]:
         """Get prediction probabilities for multiple texts"""
         return [self.predict_proba(text) for text in texts]
-    
-    def save(self, save_path: str):
-        """Save model and tokenizer"""
-        os.makedirs(save_path, exist_ok=True)
-        self.model.save_pretrained(save_path)
-        self.tokenizer.save_pretrained(save_path)
-        print(f"Model saved to {save_path}")
+
+    def _rule_based_detection(self, text: str) -> np.ndarray:
+        """
+        Fallback rule-based phishing detection
+
+        Args:
+            text: Email text
+
+        Returns:
+            Array of probabilities [legitimate_prob, phishing_prob]
+        """
+        text_lower = text.lower()
+        score = 0.0
+
+        # Phishing indicators
+        urgent_words = ['urgent', 'immediate', 'action required', 'suspended', 'verify', 'confirm', 'expire']
+        sensitive_words = ['password', 'credit card', 'ssn', 'social security', 'bank account', 'pin']
+        threat_words = ['suspend', 'close', 'terminate', 'legal action', 'fraud']
+        suspicious_words = ['click here', 'act now', 'limited time', 'congratulations', 'winner']
+
+        # Count indicators
+        for word in urgent_words:
+            if word in text_lower:
+                score += 0.15
+
+        for word in sensitive_words:
+            if word in text_lower:
+                score += 0.20
+
+        for word in threat_words:
+            if word in text_lower:
+                score += 0.18
+
+        for word in suspicious_words:
+            if word in text_lower:
+                score += 0.12
+
+        # Cap score at 1.0
+        phishing_prob = min(score, 0.95)
+        legitimate_prob = 1.0 - phishing_prob
+
+        return np.array([legitimate_prob, phishing_prob])
